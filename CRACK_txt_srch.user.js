@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         RH 크랙 로그 저장 (v1.0)
+// @name         RH 크랙 로그 저장 (v1.1)
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  v1.0 (Glassmorphism)
+// @version      1.1
+// @description  위치 저장/복구 + 검색된 대화만 추출하기 기능 추가
 // @author       RH
 // @match        https://crack.wrtn.ai/stories/*/episodes/*
 // @grant        GM_xmlhttpRequest
@@ -15,7 +15,7 @@
     const API_BASE = "https://crack-api.wrtn.ai";
 
     // ===================================================================================
-    // PART 1: 데이터 수집 
+    // PART 1: 데이터 수집
     // ===================================================================================
     function getCookie(name) {
         const value = `; ${document.cookie}`; const parts = value.split(`; ${name}=`);
@@ -75,16 +75,21 @@
     }
 
     // ===================================================================================
-    // PART 2: TXT 생성 
+    // PART 2: TXT 생성 (일반 저장 & 검색 추출)
     // ===================================================================================
-    function generateTxtContent(chatData, includeNote, rangeStart, rangeEnd) {
+    function generateTxtContent(chatData, includeNote, rangeStart, rangeEnd, filterKeyword = null) {
         let txt = `제목: ${chatData.title}\n`;
         txt += `저장일시: ${new Date().toLocaleString()}\n`;
-        
-        const totalMsgs = chatData.messages.length;
-        const start = rangeStart ? Math.max(1, rangeStart) : 1;
-        const end = rangeEnd ? Math.min(totalMsgs, rangeEnd) : totalMsgs;
-        txt += `저장범위: ${start} ~ ${end} (총 ${end - start + 1}개)\n`;
+
+        // 검색 모드일 경우 헤더 변경
+        if (filterKeyword) {
+            txt += `검색어: "${filterKeyword}" (추출된 대화)\n`;
+        } else {
+            const totalMsgs = chatData.messages.length;
+            const start = rangeStart ? Math.max(1, rangeStart) : 1;
+            const end = rangeEnd ? Math.min(totalMsgs, rangeEnd) : totalMsgs;
+            txt += `저장범위: ${start} ~ ${end} (총 ${end - start + 1}개)\n`;
+        }
 
         if (includeNote && chatData.userNote) {
             txt += `\n\n[ 유저 노트 ]\n\n${chatData.userNote}\n`;
@@ -92,10 +97,20 @@
 
         txt += `\n\n[ 대화 내용 ]\n\n`;
 
-        const slicedMessages = chatData.messages.slice(start - 1, end);
+        // 메시지 필터링 로직
+        let targetMessages = [];
+        if (filterKeyword) {
+            // 검색 추출 모드
+            targetMessages = chatData.messages.filter(m => m.content.includes(filterKeyword));
+        } else {
+            // 일반 범위 저장 모드
+            const start = rangeStart ? Math.max(1, rangeStart) : 1;
+            const end = rangeEnd ? Math.min(chatData.messages.length, rangeEnd) : chatData.messages.length;
+            targetMessages = chatData.messages.slice(start - 1, end);
+        }
 
-        slicedMessages.forEach(msg => {
-            const speakerName = (msg.role === 'user') ? 'user' : chatData.charName;
+        targetMessages.forEach(msg => {
+            const speakerName = (msg.role === 'user') ? '{{user}}' : chatData.charName;
             txt += `—— ${speakerName} ——\n`;
             txt += `${msg.content}\n\n\n`; 
         });
@@ -104,9 +119,36 @@
     }
 
     // ===================================================================================
-    // PART 3: UI
+    // PART 3: UI (위치 저장&검색 추출 버튼 추가)
     // ===================================================================================
     
+    // 위치 저장 및 복원 로직
+    function restorePosition(element) {
+        const savedPos = localStorage.getItem('rh_panel_pos');
+        if (savedPos) {
+            try {
+                const { top, left } = JSON.parse(savedPos);
+                // 안전장치: 화면 밖으로 나갔는지 확인
+                const maxLeft = window.innerWidth - 60; // 버튼 크기 고려
+                const maxTop = window.innerHeight - 60;
+                
+                let safeLeft = Math.max(10, Math.min(left, maxLeft));
+                let safeTop = Math.max(10, Math.min(top, maxTop));
+                
+                element.style.top = safeTop + 'px';
+                element.style.left = safeLeft + 'px';
+            } catch (e) {
+                // 오류 시 기본 위치
+                element.style.top = '20px';
+                element.style.left = '20px';
+            }
+        }
+    }
+
+    function savePosition(top, left) {
+        localStorage.setItem('rh_panel_pos', JSON.stringify({ top, left }));
+    }
+
     function makeDraggable(element) {
         let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
         
@@ -114,7 +156,6 @@
         element.ontouchstart = dragMouseDown;
 
         function dragMouseDown(e) {
-            // 버튼이나 인풋 클릭 시 드래그 방지 (중요)
             if (e.target.tagName === 'INPUT' || (e.target.tagName === 'BUTTON' && e.target.id !== 'rh-main-toggle')) {
                 return;
             }
@@ -151,13 +192,15 @@
             document.onmousemove = null;
             document.ontouchend = null;
             document.ontouchmove = null;
+            // 드래그 종료 시 위치 저장
+            savePosition(element.offsetTop, element.offsetLeft);
         }
     }
 
     function createFloatingPanel() {
         if (document.getElementById('crack-saver-panel')) return;
 
-        // --- CSS 스타일 정의 (인라인으로 적용하여 충돌 방지) ---
+        // 스타일 정의
         const fontStyle = "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;";
         const glassStyle = "background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.5); box-shadow: 0 8px 32px rgba(0,0,0,0.12);";
         const inputStyle = "width: 100%; padding: 8px 12px; background: #F2F2F7; border: none; border-radius: 8px; font-size: 13px; outline: none; color: #1c1c1e;";
@@ -167,11 +210,12 @@
         panel.id = 'crack-saver-panel';
         panel.style.cssText = `position: fixed; top: 20px; left: 20px; z-index: 99999; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; ${fontStyle} touch-action: none;`;
 
-        // sub 패널
-        const subPanel = document.createElement('div');
-        subPanel.style.cssText = `display: none; flex-direction: column; gap: 15px; ${glassStyle} padding: 20px; border-radius: 20px; min-width: 240px; animation: fadeIn 0.2s ease-out;`;
+        // 위치 복원 (safe)
+        restorePosition(panel);
 
-        // check 생성
+        const subPanel = document.createElement('div');
+        subPanel.style.cssText = `display: none; flex-direction: column; gap: 15px; ${glassStyle} padding: 20px; border-radius: 20px; min-width: 260px; animation: fadeIn 0.2s ease-out;`;
+
         const createCheckbox = (id, labelText, checked = true) => {
             const wrap = document.createElement('label');
             wrap.style.cssText = `display: flex; align-items: center; gap: 10px; font-size: 13px; color: #1c1c1e; cursor: pointer; user-select: none; font-weight: 500;`;
@@ -179,7 +223,7 @@
             chk.type = 'checkbox';
             chk.id = id;
             chk.checked = checked;
-            chk.style.accentColor = "#007AFF"; // Apple Blue
+            chk.style.accentColor = "#007AFF"; 
             wrap.appendChild(chk);
             wrap.appendChild(document.createTextNode(labelText));
             return { wrap, chk };
@@ -195,17 +239,16 @@
 
         const noteOpt = createCheckbox('opt-note', 'User Note 포함');
 
-        // srch area
+        // 검색 및 추출 영역
         const searchContainer = document.createElement('div');
         searchContainer.style.cssText = `display: flex; gap: 8px;`;
         const searchInput = createInput('단어 검색...', 'search-input');
         const searchBtn = document.createElement('button');
-        // 돋보기 아이콘 (SVG)
         searchBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:#1c1c1e"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`;
-        searchBtn.style.cssText = `${btnStyle} background: #E5E5EA; border-radius: 8px; width: 36px; display: flex; align-items: center; justify-content: center;`;
+        searchBtn.style.cssText = `${btnStyle} background: #E5E5EA; border-radius: 8px; width: 36px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;`;
         
         const searchResult = document.createElement('div');
-        searchResult.style.cssText = `font-size: 12px; color: #007AFF; background: rgba(0,122,255,0.1); padding: 10px; border-radius: 8px; margin-top: 5px; display: none; line-height: 1.4;`;
+        searchResult.style.cssText = `font-size: 12px; color: #007AFF; background: rgba(0,122,255,0.1); padding: 10px; border-radius: 8px; margin-top: 5px; display: none; line-height: 1.4; position: relative;`;
 
         searchBtn.onclick = async () => {
             const keyword = searchInput.value.trim();
@@ -217,9 +260,28 @@
                 data.messages.forEach((msg, idx) => {
                     if (msg.content.includes(keyword)) foundIndices.push(idx + 1);
                 });
+                
                 searchResult.style.display = 'block';
                 if (foundIndices.length > 0) {
-                    searchResult.innerHTML = `Found "<b>${keyword}</b>":<br>${foundIndices.join(', ')}<br><span style="opacity:0.7">Total: ${foundIndices.length}</span>`;
+                    // 검색 결과 텍스트
+                    searchResult.innerHTML = `Found "<b>${keyword}</b>":<br>Total: ${foundIndices.length} items<br><div style="margin-top:6px; font-size:11px; opacity:0.8; max-height:40px; overflow-y:auto;">${foundIndices.join(', ')}</div>`;
+                    
+                    // [추출] 버튼 생성 (동적)
+                    const extractBtn = document.createElement('button');
+                    extractBtn.innerText = 'Extract';
+                    extractBtn.style.cssText = `position: absolute; top: 10px; right: 10px; background: #fff; border: 1px solid rgba(0,122,255,0.3); color: #007AFF; font-size: 11px; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-weight: 600; box-shadow: 0 2px 5px rgba(0,0,0,0.05);`;
+                    extractBtn.onmouseover = () => extractBtn.style.background = '#f0f8ff';
+                    extractBtn.onmouseout = () => extractBtn.style.background = '#fff';
+                    
+                    extractBtn.onclick = () => {
+                        const useNote = noteOpt.chk.checked;
+                        const finalTxt = generateTxtContent(data, useNote, null, null, keyword);
+                        const safeTitle = data.title.replace(/[\\/:*?"<>|]/g, "").trim();
+                        downloadFile(finalTxt, `${safeTitle}_extracted.txt`);
+                    };
+                    
+                    searchResult.appendChild(extractBtn);
+
                 } else {
                     searchResult.innerHTML = `Not found: "${keyword}"`;
                 }
@@ -244,7 +306,6 @@
         rangeContainer.appendChild(rangeSep);
         rangeContainer.appendChild(endInput);
 
-        // 저장 버튼 (검은색 min 버튼)
         const txtBtn = document.createElement('button');
         txtBtn.innerText = 'Save as TXT';
         txtBtn.style.cssText = `${btnStyle} width: 100%; padding: 12px; margin-top: 5px; background: #1c1c1e; color: #fff; border-radius: 10px; font-size: 14px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);`;
@@ -260,7 +321,8 @@
                 const useNote = noteOpt.chk.checked;
                 const sVal = parseInt(startInput.value);
                 const eVal = parseInt(endInput.value);
-                const finalTxt = generateTxtContent(data, useNote, isNaN(sVal)?null:sVal, isNaN(eVal)?null:eVal);
+                // 일반 저장이므로 keyword는 null
+                const finalTxt = generateTxtContent(data, useNote, isNaN(sVal)?null:sVal, isNaN(eVal)?null:eVal, null);
                 const safeTitle = data.title.replace(/[\\/:*?"<>|]/g, "").trim();
                 downloadFile(finalTxt, `${safeTitle}.txt`);
                 txtBtn.innerText = 'Done';
@@ -268,7 +330,6 @@
             setTimeout(() => { txtBtn.innerText = originalText; txtBtn.style.opacity = '1'; }, 2000);
         };
 
-        // 섹션 제목 헬퍼
         const createHeader = (text) => {
             const div = document.createElement('div');
             div.innerText = text;
@@ -278,9 +339,9 @@
 
         subPanel.appendChild(createHeader('Options'));
         subPanel.appendChild(noteOpt.wrap);
-        subPanel.appendChild(document.createElement('div')).style.cssText = "height: 1px; background: rgba(0,0,0,0.05); width: 100%;"; // Divider
+        subPanel.appendChild(document.createElement('div')).style.cssText = "height: 1px; background: rgba(0,0,0,0.05); width: 100%;";
         
-        subPanel.appendChild(createHeader('Search'));
+        subPanel.appendChild(createHeader('Search & Extract'));
         subPanel.appendChild(searchContainer);
         subPanel.appendChild(searchResult);
         
@@ -289,12 +350,9 @@
         
         subPanel.appendChild(txtBtn);
 
-        // 메인 토글 버튼 (아이콘 교체)
         const toggleBtn = document.createElement('button');
-        toggleBtn.id = 'rh-main-toggle'; // 드래그 식별용 ID
-        // 저장 아이콘 SVG
+        toggleBtn.id = 'rh-main-toggle'; 
         const iconSave = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>`;
-        // 닫기 아이콘 SVG
         const iconClose = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
         
         toggleBtn.innerHTML = iconSave;
@@ -313,7 +371,6 @@
         panel.appendChild(subPanel);
         document.body.appendChild(panel);
 
-        // 드래그 적용
         makeDraggable(panel);
     }
 
@@ -322,3 +379,4 @@
     setInterval(createFloatingPanel, 3000);
 
 })();
+
