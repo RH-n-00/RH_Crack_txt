@@ -1,5 +1,3 @@
-
-
 // ==UserScript==
 // @name         RH 크랙 로그 저장 (v1.1)
 // @namespace    http://tampermonkey.net/
